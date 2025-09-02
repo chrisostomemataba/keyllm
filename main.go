@@ -19,13 +19,10 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	_ "modernc.org/sqlite"
 	"golang.org/x/crypto/bcrypt"
 )
-
-/* ===========================
-   CONFIG / GLOBALS
-=========================== */
 
 const (
 	dbPath            = "keyllm.db"
@@ -34,15 +31,11 @@ const (
 
 var (
 	db           *sql.DB
-	adminTokens  = map[string]time.Time{} // simple in-memory admin sessions (token -> expiry)
-	openAPISpec  = mustOpenAPISpec()      // served at /openapi.json
+	adminTokens  = map[string]time.Time{}
+	openAPISpec  = mustOpenAPISpec()
 	serverStart  = time.Now()
-	requestLimit = 10_000_000 // safety ceiling for CSV export
+	requestLimit = 10_000_000
 )
-
-/* ===========================
-   UTILITIES
-=========================== */
 
 func rndToken(n int) string {
 	b := make([]byte, n)
@@ -59,14 +52,9 @@ func parseInt(s string, def int) int {
 
 func clientIP(c *fiber.Ctx) string {
 	ip := c.IP()
-	// normalize IPv6 loopback, etc.
 	if ip == "::1" { ip = "127.0.0.1" }
 	return ip
 }
-
-/* ===========================
-   DB INIT & MIGRATIONS
-=========================== */
 
 func mustOpenDB() *sql.DB {
 	d, err := sql.Open("sqlite", dbPath)
@@ -78,15 +66,19 @@ func mustOpenDB() *sql.DB {
 
 func mustMigrate() {
 	schema := `
+-- Enhanced settings (still single company but better organized)
 CREATE TABLE IF NOT EXISTS settings (
   id INTEGER PRIMARY KEY CHECK (id=1),
   company_name TEXT DEFAULT 'KeyLLM',
   logo_url TEXT,
-  ip_allowlist TEXT DEFAULT '', -- comma-separated CIDRs or IPs
-  admin_email TEXT DEFAULT '` + defaultAdminEmail + `',
+  admin_email TEXT DEFAULT 'admin@local',
   admin_password_hash TEXT,
   license_key TEXT,
-  https_enabled INTEGER DEFAULT 0
+  https_enabled INTEGER DEFAULT 0,
+  max_daily_requests INTEGER DEFAULT 0,  -- Global rate limiting
+  max_monthly_requests INTEGER DEFAULT 0,
+  created_at TEXT,
+  updated_at TEXT
 );
 
 INSERT INTO settings (id) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM settings WHERE id=1);
@@ -96,21 +88,25 @@ CREATE TABLE IF NOT EXISTS api_keys (
   key TEXT UNIQUE NOT NULL,
   label TEXT,
   owner TEXT,
-  expires_at TEXT,           -- RFC3339 or NULL
-  daily_limit INTEGER DEFAULT 0,   -- 0 = unlimited
+  expires_at TEXT,
+  daily_limit INTEGER DEFAULT 0,
   monthly_limit INTEGER DEFAULT 0,
   token_limit INTEGER DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS model_config (
-  id INTEGER PRIMARY KEY CHECK (id=1),
-  backend TEXT DEFAULT 'ollama',   -- ollama|lmstudio|llamacpp|hf|custom
+-- Multiple model configurations (remove single ID constraint)
+CREATE TABLE IF NOT EXISTS model_configs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,                    -- User-friendly name
+  backend TEXT DEFAULT 'ollama',         -- ollama|lmstudio|llamacpp|hf|custom  
   url TEXT DEFAULT 'http://localhost:11434',
   model_name TEXT DEFAULT 'llama2',
   temperature REAL DEFAULT 0.7,
   max_tokens INTEGER DEFAULT 512,
-  headers_json TEXT DEFAULT '{}'
+  headers_json TEXT DEFAULT '{}',
+  is_active INTEGER DEFAULT 0,           -- Only one can be active
+  created_at TEXT NOT NULL
 );
 
 INSERT INTO model_config (id) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM model_config WHERE id=1);
@@ -127,10 +123,21 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   endpoint TEXT,
   FOREIGN KEY(api_key_id) REFERENCES api_keys(id) ON DELETE SET NULL
 );
+
+
+-- Separate IP allowlist table for better management
+CREATE TABLE IF NOT EXISTS ip_allowlist (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ip_address TEXT NOT NULL,              -- Individual IP or CIDR
+  label TEXT,                            -- Description like "Office Network"
+  created_at TEXT NOT NULL,
+  is_active INTEGER DEFAULT 1
+);
+
+
 `
 	if _, err := db.Exec(schema); err != nil { log.Fatal(err) }
 
-	// bootstrap admin password if empty
 	var has string
 	_ = db.QueryRow("SELECT admin_password_hash FROM settings WHERE id=1").Scan(&has)
 	if has == "" {
@@ -142,10 +149,6 @@ CREATE TABLE IF NOT EXISTS usage_logs (
 	}
 }
 
-/* ===========================
-   MIDDLEWARE
-=========================== */
-
 func adminAuth(c *fiber.Ctx) error {
 	auth := c.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") { return fiber.ErrUnauthorized }
@@ -155,19 +158,46 @@ func adminAuth(c *fiber.Ctx) error {
 	return c.Next()
 }
 
-func ipAllowed(ip string, allowlist string) bool {
-	al := strings.Split(strings.TrimSpace(allowlist), ",")
-	if len(al) == 0 || allowlist == "" { return true } // no restrictions
-	for _, entry := range al {
-		e := strings.TrimSpace(entry)
-		if e == "" { continue }
-		if strings.Contains(e, "/") {
-			_, netw, err := net.ParseCIDR(e); if err == nil && netw.Contains(net.ParseIP(ip)) { return true }
-		} else if ip == e {
-			return true
-		}
-	}
-	return false
+func ipAllowed(ip string) bool {
+    // Get all active IPs from database
+    rows, err := db.Query("SELECT ip_address FROM ip_allowlist WHERE is_active = 1")
+    if err != nil {
+        return true // Fail open if database error
+    }
+    defer rows.Close()
+    
+    var allowedIPs []string
+    for rows.Next() {
+        var allowedIP string
+        _ = rows.Scan(&allowedIP)
+        allowedIPs = append(allowedIPs, allowedIP)
+    }
+    
+    // If no IPs configured, allow all
+    if len(allowedIPs) == 0 {
+        return true
+    }
+    
+    // Check against each allowed IP/CIDR
+    for _, allowedIP := range allowedIPs {
+        allowedIP = strings.TrimSpace(allowedIP)
+        if allowedIP == "" { continue }
+        
+        if strings.Contains(allowedIP, "/") {
+            // CIDR range
+            _, network, err := net.ParseCIDR(allowedIP)
+            if err == nil && network.Contains(net.ParseIP(ip)) {
+                return true
+            }
+        } else {
+            // Single IP
+            if ip == allowedIP {
+                return true
+            }
+        }
+    }
+    
+    return false
 }
 
 func apiKeyAuth(c *fiber.Ctx) (*struct {
@@ -183,7 +213,6 @@ func apiKeyAuth(c *fiber.Ctx) (*struct {
 	if err := row.Scan(&rec.ID, &rec.Key, &rec.Label, &rec.Owner, &rec.ExpiresAt, &rec.DL, &rec.ML, &rec.TL); err != nil {
 		return nil, fiber.ErrUnauthorized
 	}
-	// expiry check
 	if rec.ExpiresAt != nil {
 		t, err := time.Parse(time.RFC3339, *rec.ExpiresAt); if err == nil && time.Now().After(t) { return nil, fiber.ErrUnauthorized }
 	}
@@ -205,15 +234,11 @@ func secured(summary string, response interface{}) map[string]interface{} {
 	}
 }
 
-/* ===========================
-   TYPES
-=========================== */
-
 type LoginReq struct{ Email, Password string }
 type KeyReq struct {
 	Label string `json:"label"`
 	Owner string `json:"owner"`
-	ExpiresAt *string `json:"expires_at"` // RFC3339 or null
+	ExpiresAt *string `json:"expires_at"`
 	DailyLimit, MonthlyLimit, TokenLimit int `json:"daily_limit","monthly_limit","token_limit"`
 }
 type ModelCfg struct {
@@ -237,10 +262,6 @@ type Settings struct {
 	LicenseKey  string `json:"license_key"`
 }
 
-/* ===========================
-   MAIN
-=========================== */
-
 func main() {
 	db = mustOpenDB(); defer db.Close()
 	mustMigrate()
@@ -248,7 +269,14 @@ func main() {
 	app := fiber.New()
 	app.Use(cors.New())
 
-	/* ---- Docs (Swagger via Redoc) ---- */
+	app.Use("/web", filesystem.New(filesystem.Config{
+		Root: http.Dir("./web"),
+	}))
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.Redirect("/web/login.html")
+	})
+
 	app.Get("/docs", func(c *fiber.Ctx) error {
 		html := `<!doctype html><html><head><meta charset=utf-8><title>KeyLLM API Docs</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/redoc@next/bundles/redoc.standalone.css">
@@ -262,7 +290,6 @@ func main() {
 		return c.Type("json").Send(openAPISpec)
 	})
 
-	/* ---- Auth ---- */
 	app.Post("/auth/login", func(c *fiber.Ctx) error {
 		var r LoginReq; if err := c.BodyParser(&r); err != nil { return fiber.ErrBadRequest }
 		var email, hash string
@@ -277,7 +304,6 @@ func main() {
 		return c.JSON(fiber.Map{"token": tok, "expires_in_hours": 12})
 	})
 
-	/* ---- Admin: API Keys ---- */
 	app.Get("/admin/keys", adminAuth, func(c *fiber.Ctx) error {
 		rows, err := db.Query(`SELECT id,key,label,owner,expires_at,daily_limit,monthly_limit,token_limit,created_at FROM api_keys ORDER BY id DESC`)
 		if err != nil { return fiber.ErrInternalServerError }
@@ -306,7 +332,6 @@ func main() {
 		return c.SendStatus(204)
 	})
 
-	/* ---- Admin: Model Config ---- */
 	app.Get("/admin/model", adminAuth, func(c *fiber.Ctx) error {
 		var b, u, m string; var t float64; var mx int; var hj string
 		if err := db.QueryRow(`SELECT backend,url,model_name,temperature,max_tokens,headers_json FROM model_config WHERE id=1`).
@@ -324,7 +349,6 @@ func main() {
 		return c.SendStatus(204)
 	})
 	app.Post("/admin/model/test", adminAuth, func(c *fiber.Ctx) error {
-		// simple HEAD/GET ping to the configured URL
 		var url string
 		_ = db.QueryRow(`SELECT url FROM model_config WHERE id=1`).Scan(&url)
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second); defer cancel()
@@ -335,7 +359,6 @@ func main() {
 		return c.JSON(fiber.Map{"ok": resp.StatusCode < 500, "status": resp.Status})
 	})
 
-	/* ---- Admin: Settings ---- */
 	app.Get("/admin/settings", adminAuth, func(c *fiber.Ctx) error {
 		var s Settings; var https int
 		if err := db.QueryRow(`SELECT company_name,logo_url,ip_allowlist,admin_email,https_enabled,license_key FROM settings WHERE id=1`).
@@ -354,7 +377,6 @@ func main() {
 		return c.SendStatus(204)
 	})
 
-	/* ---- Admin: Usage Logs ---- */
 	app.Get("/admin/logs", adminAuth, func(c *fiber.Ctx) error {
 		limit := parseInt(c.Query("limit","100"), 100)
 		offset := parseInt(c.Query("offset","0"), 0)
@@ -393,14 +415,11 @@ func main() {
 		return c.Send(buf.Bytes())
 	})
 
-	/* ---- Client: Generate (API-key protected) ---- */
 	app.Post("/llm/generate", func(c *fiber.Ctx) error {
-		// ip allowlist check
 		var allowlist string
 		_ = db.QueryRow("SELECT ip_allowlist FROM settings WHERE id=1").Scan(&allowlist)
-		if !ipAllowed(clientIP(c), allowlist) { return fiber.ErrForbidden }
+		if !ipAllowed(clientIP(c)) { return fiber.ErrForbidden }
 
-		// api key check
 		ak, err := apiKeyAuth(c); if err != nil { return err }
 
 		var cfg ModelCfg; var hj string
@@ -413,7 +432,6 @@ func main() {
 		if prompt == "" { return fiber.NewError(400, "prompt required") }
 
 		start := time.Now()
-		// Simple backend adapter: Ollama & LM Studio (OpenAI-compatible)
 		var outText string
 		switch strings.ToLower(cfg.Backend) {
 		case "ollama":
@@ -429,7 +447,6 @@ func main() {
 			if s,ok := j["response"].(string); ok { outText = s } else { outText = fmt.Sprintf("%v", j) }
 
 		case "lmstudio","openai","openai_compat":
-			// Expecting OpenAI-compatible /v1/chat/completions
 			payload := map[string]interface{}{
 				"model": cfg.Model,
 				"messages": []map[string]string{{"role":"user","content": prompt}},
@@ -453,18 +470,142 @@ func main() {
 		}
 
 		lat := time.Since(start).Milliseconds()
-		// naive token estimate (chars/4)
 		toks := (len(prompt)+len(outText)) / 4
 
-		// log usage
 		_, _ = db.Exec(`INSERT INTO usage_logs (api_key_id,ts,prompt_chars,completion_chars,tokens,model,latency_ms,endpoint)
 		                VALUES (?,?,?,?,?,?,?,?)`,
 			ak.ID, nowUTC(), len(prompt), len(outText), toks, cfg.Model, lat, "/llm/generate")
 
 		return c.JSON(fiber.Map{"model": cfg.Model, "latency_ms": lat, "tokens_est": toks, "output": outText})
 	})
+	app.Get("/admin/models", adminAuth, func(c *fiber.Ctx) error {
+		rows, err := db.Query(`SELECT id,name,backend,url,model_name,temperature,max_tokens,is_active,created_at FROM model_configs ORDER BY id DESC`)
+		if err != nil { return fiber.ErrInternalServerError }
+		defer rows.Close()
+		
+		var models []map[string]interface{}
+		for rows.Next() {
+			var id int64; var name, backend, url, model, created string
+			var temp float64; var maxTok, active int
+			_ = rows.Scan(&id, &name, &backend, &url, &model, &temp, &maxTok, &active, &created)
+			
+			models = append(models, fiber.Map{
+				"id": id, "name": name, "backend": backend, "url": url,
+				"model_name": model, "temperature": temp, "max_tokens": maxTok,
+				"is_active": active == 1, "created_at": created,
+			})
+		}
+		return c.JSON(models)
+	})
+	
+	app.Post("/admin/models", adminAuth, func(c *fiber.Ctx) error {
+		var req struct {
+			Name        string  `json:"name"`
+			Backend     string  `json:"backend"`
+			URL         string  `json:"url"`
+			ModelName   string  `json:"model_name"`
+			Temperature float64 `json:"temperature"`
+			MaxTokens   int     `json:"max_tokens"`
+			IsActive    bool    `json:"is_active"`
+		}
+		
+		if err := c.BodyParser(&req); err != nil { return fiber.ErrBadRequest }
+		
+		// If setting as active, deactivate others
+		if req.IsActive {
+			_, _ = db.Exec("UPDATE model_configs SET is_active = 0")
+		}
+		
+		active := 0; if req.IsActive { active = 1 }
+		
+		_, err := db.Exec(`INSERT INTO model_configs (name,backend,url,model_name,temperature,max_tokens,is_active,created_at)
+						   VALUES (?,?,?,?,?,?,?,?)`,
+			req.Name, req.Backend, req.URL, req.ModelName, req.Temperature, req.MaxTokens, active, nowUTC())
+		
+		if err != nil { return fiber.ErrInternalServerError }
+		return c.SendStatus(201)
+	})
+	
+	app.Delete("/admin/models/:id", adminAuth, func(c *fiber.Ctx) error {
+		_, err := db.Exec("DELETE FROM model_configs WHERE id = ?", c.Params("id"))
+		if err != nil { return fiber.ErrInternalServerError }
+		return c.SendStatus(204)
+	})
+	
+	app.Put("/admin/models/:id/activate", adminAuth, func(c *fiber.Ctx) error {
+		id := c.Params("id")
+		
+		// Deactivate all others first
+		_, _ = db.Exec("UPDATE model_configs SET is_active = 0")
+		
+		// Activate the selected one
+		_, err := db.Exec("UPDATE model_configs SET is_active = 1 WHERE id = ?", id)
+		if err != nil { return fiber.ErrInternalServerError }
+		
+		return c.SendStatus(204)
+	})
+	
+	// IP Management Endpoints
+	app.Get("/admin/ips", adminAuth, func(c *fiber.Ctx) error {
+		rows, err := db.Query(`SELECT id,ip_address,label,is_active,created_at FROM ip_allowlist ORDER BY id DESC`)
+		if err != nil { return fiber.ErrInternalServerError }
+		defer rows.Close()
+		
+		var ips []map[string]interface{}
+		for rows.Next() {
+			var id int64; var ip, label, created string; var active int
+			_ = rows.Scan(&id, &ip, &label, &active, &created)
+			
+			ips = append(ips, fiber.Map{
+				"id": id, "ip_address": ip, "label": label,
+				"is_active": active == 1, "created_at": created,
+			})
+		}
+		return c.JSON(ips)
+	})
+	
+	app.Post("/admin/ips", adminAuth, func(c *fiber.Ctx) error {
+		var req struct {
+			IPAddress string `json:"ip_address"`
+			Label     string `json:"label"`
+		}
+		
+		if err := c.BodyParser(&req); err != nil { return fiber.ErrBadRequest }
+		
+		// Validate IP/CIDR format
+		if req.IPAddress != "" {
+			if !strings.Contains(req.IPAddress, "/") {
+				// Single IP
+				if net.ParseIP(req.IPAddress) == nil {
+					return fiber.NewError(400, "Invalid IP address")
+				}
+			} else {
+				// CIDR range
+				if _, _, err := net.ParseCIDR(req.IPAddress); err != nil {
+					return fiber.NewError(400, "Invalid CIDR range")
+				}
+			}
+		}
+		
+		_, err := db.Exec(`INSERT INTO ip_allowlist (ip_address,label,created_at,is_active) VALUES (?,?,?,1)`,
+			req.IPAddress, req.Label, nowUTC())
+		
+		if err != nil { return fiber.ErrInternalServerError }
+		return c.SendStatus(201)
+	})
+	
+	app.Delete("/admin/ips/:id", adminAuth, func(c *fiber.Ctx) error {
+		_, err := db.Exec("DELETE FROM ip_allowlist WHERE id = ?", c.Params("id"))
+		if err != nil { return fiber.ErrInternalServerError }
+		return c.SendStatus(204)
+	})
+	
+	app.Put("/admin/ips/:id/toggle", adminAuth, func(c *fiber.Ctx) error {
+		_, err := db.Exec("UPDATE ip_allowlist SET is_active = 1 - is_active WHERE id = ?", c.Params("id"))
+		if err != nil { return fiber.ErrInternalServerError }
+		return c.SendStatus(204)
+	})
 
-	/* ---- Health / Meta ---- */
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status":"ok","started_at":serverStart.Format(time.RFC3339)})
 	})
@@ -473,14 +614,18 @@ func main() {
 	log.Fatal(app.Listen(":8080"))
 }
 
-/* ===========================
-   OPENAPI SPEC (MIN)
-=========================== */
-
 func mustOpenAPISpec() []byte {
 	spec := map[string]interface{}{
 		"openapi":"3.0.0",
 		"info": map[string]string{"title":"KeyLLM API","version":"1.0.0"},
+		"components": map[string]interface{}{
+			"securitySchemes": map[string]interface{}{
+				"BearerAuth": map[string]interface{}{
+					"type":   "http",
+					"scheme": "bearer",
+				},
+			},
+		},
 		"paths": map[string]interface{}{
 			"/auth/login": map[string]interface{}{"post": map[string]interface{}{
 				"summary":"Admin login","requestBody":reqObj(map[string]string{"email":"string","password":"string"}),
