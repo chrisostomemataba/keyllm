@@ -5,16 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KeyLLM Admin Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .dialog-backdrop {
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+    </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
-    <nav class="bg-white shadow-sm border-b">
+    <nav class="bg-white shadow-sm">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between h-16">
                 <div class="flex items-center">
-                    <h1 class="text-xl font-semibold text-gray-900">KeyLLM Admin</h1>
+                    <h1 class="text-xl font-semibold text-gray-900">🔑 KeyLLM Admin</h1>
                 </div>
                 <div class="flex items-center space-x-4">
-                    <button onclick="logout()" class="text-red-600 hover:text-red-800">Logout</button>
+                    <button onclick="logout()" class="text-sm font-medium text-gray-500 hover:text-red-600">Logout</button>
                 </div>
             </div>
         </div>
@@ -22,124 +27,88 @@
 
     <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
         <div class="mb-8">
-            <div class="flex space-x-1 bg-gray-100 p-1 rounded-lg w-fit">
-                <button onclick="showTab('keys')" id="tab-keys" class="px-4 py-2 rounded-md text-sm font-medium bg-white shadow-sm text-blue-600">API Keys</button>
-                <button onclick="showTab('model')" id="tab-model" class="px-4 py-2 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700">Model Config</button>
-                <button onclick="showTab('logs')" id="tab-logs" class="px-4 py-2 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700">Usage Logs</button>
-                <button onclick="showTab('settings')" id="tab-settings" class="px-4 py-2 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700">Settings</button>
+            <div class="flex space-x-1 bg-gray-200 p-1 rounded-lg w-fit">
+                <button onclick="showTab('keys')" id="tab-keys" class="px-4 py-2 rounded-md text-sm font-medium">API Keys</button>
+                <button onclick="showTab('models')" id="tab-models" class="px-4 py-2 rounded-md text-sm font-medium">Models</button>
+                <button onclick="showTab('ips')" id="tab-ips" class="px-4 py-2 rounded-md text-sm font-medium">IP Access</button>
+                <button onclick="showTab('logs')" id="tab-logs" class="px-4 py-2 rounded-md text-sm font-medium">Usage Logs</button>
+                <button onclick="showTab('settings')" id="tab-settings" class="px-4 py-2 rounded-md text-sm font-medium">Settings</button>
             </div>
         </div>
 
         <div id="content-keys" class="tab-content">
             <div class="bg-white shadow rounded-lg">
-                <div class="px-6 py-4 border-b border-gray-200">
-                    <div class="flex justify-between items-center">
-                        <h2 class="text-lg font-medium text-gray-900">API Keys</h2>
-                        <button onclick="showCreateKeyForm()" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Create Key</button>
-                    </div>
+                <div class="px-6 py-4 border-b flex justify-between items-center">
+                    <h2 class="text-lg font-medium text-gray-900">API Keys</h2>
+                    <button onclick="showCreateKeyForm()" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm">Create Key</button>
                 </div>
-                
                 <div id="createKeyForm" class="hidden px-6 py-4 border-b bg-gray-50">
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <input type="text" id="keyLabel" placeholder="Label" class="px-3 py-2 border rounded-md">
-                        <input type="text" id="keyOwner" placeholder="Owner" class="px-3 py-2 border rounded-md">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
+                        <input type="text" id="keyLabel" placeholder="Label (e.g., Research Dept)" class="px-3 py-2 border rounded-md">
+                        <input type="text" id="keyOwner" placeholder="Owner (e.g., jane.doe@example.com)" class="px-3 py-2 border rounded-md">
                         <div class="flex space-x-2">
-                            <button onclick="createKey()" class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700">Create</button>
+                            <button onclick="createKey()" class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700">Save</button>
                             <button onclick="hideCreateKeyForm()" class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600">Cancel</button>
                         </div>
                     </div>
                 </div>
-                
-                <div class="px-6 py-4">
-                    <div id="keysList" class="space-y-3"></div>
+                <div class="p-6">
+                    <div id="keysList"></div>
                 </div>
             </div>
         </div>
 
-        <div id="content-model" class="tab-content hidden">
-            <div class="bg-white shadow rounded-lg p-6">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-lg font-medium text-gray-900">Model Configuration</h2>
-                    <span class="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">v1.0.0 - Open Source</span>
+        <div id="content-models" class="tab-content hidden">
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-6 py-4 border-b flex justify-between items-center">
+                    <h2 class="text-lg font-medium text-gray-900">Model Configurations</h2>
+                    <button onclick="showModelDialog()" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm">Add Model</button>
                 </div>
-                
-                <div id="currentModelDisplay" class="mb-4"></div>
-                
-                <form id="modelForm" class="space-y-4">
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-2">Backend</label>
-                            <select id="backend" class="w-full px-3 py-2 border rounded-md">
-                                <option value="ollama">Ollama</option>
-                                <option value="lmstudio">LM Studio</option>
-                                <option value="openai">OpenAI Compatible</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-2">URL</label>
-                            <input type="text" id="url" class="w-full px-3 py-2 border rounded-md" placeholder="http://localhost:11434">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-2">Model Name</label>
-                            <input type="text" id="model_name" class="w-full px-3 py-2 border rounded-md" placeholder="llama2">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-2">Temperature</label>
-                            <input type="number" id="temperature" step="0.1" min="0" max="2" class="w-full px-3 py-2 border rounded-md" value="0.7">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-2">Max Tokens</label>
-                            <input type="number" id="max_tokens" class="w-full px-3 py-2 border rounded-md" value="512">
-                        </div>
-                    </div>
-                    <div class="flex space-x-4">
-                        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Save Config</button>
-                        <button type="button" onclick="testModel()" class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700">Test Connection</button>
-                    </div>
-                </form>
-                <div id="testResult"></div>
+                <div class="p-6">
+                    <div id="modelsList"></div>
+                </div>
             </div>
         </div>
 
+        <div id="content-ips" class="tab-content hidden">
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-6 py-4 border-b flex justify-between items-center">
+                    <h2 class="text-lg font-medium text-gray-900">IP Access Control</h2>
+                    <button onclick="showCreateIPDialog()" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm">Add IP</button>
+                </div>
+                <div class="p-6">
+                    <div id="ipsList"></div>
+                </div>
+            </div>
+        </div>
+        
         <div id="content-logs" class="tab-content hidden">
             <div class="bg-white shadow rounded-lg">
-                <div class="px-6 py-4 border-b border-gray-200">
-                    <div class="flex justify-between items-center">
-                        <h2 class="text-lg font-medium text-gray-900">Usage Logs</h2>
-                        <a href="/admin/logs/export" class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 inline-block">Export CSV</a>
-                    </div>
+                <div class="px-6 py-4 border-b flex justify-between items-center">
+                    <h2 class="text-lg font-medium text-gray-900">Usage Logs</h2>
+                    <a href="/admin/logs/export" class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm">Export CSV</a>
                 </div>
-                <div class="px-6 py-4">
-                    <div id="logsList" class="space-y-2"></div>
+                <div class="p-6">
+                    <div id="logsList"></div>
                 </div>
             </div>
         </div>
 
         <div id="content-settings" class="tab-content hidden">
             <div class="bg-white shadow rounded-lg p-6">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-lg font-medium text-gray-900">System Settings</h2>
-                    <span class="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">v1.0.0 - Open Source</span>
-                </div>
-                <form id="settingsForm" class="space-y-4">
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-2">Company Name</label>
-                            <input type="text" id="company_name" class="w-full px-3 py-2 border rounded-md" placeholder="KeyLLM">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-2">Admin Email</label>
-                            <input type="email" id="admin_email" class="w-full px-3 py-2 border rounded-md" placeholder="admin@local">
-                        </div>
-                        <div class="md:col-span-2">
-                            <label class="block text-sm font-medium text-gray-700 mb-2">License Key</label>
-                            <input type="text" id="license_key" class="w-full px-3 py-2 border rounded-md" placeholder="Enter your license key">
-                            <p class="text-sm text-gray-500 mt-1">Leave empty for open source usage</p>
-                        </div>
+                <h2 class="text-lg font-medium text-gray-900 mb-4">System Settings</h2>
+                <form id="settingsForm" onsubmit="event.preventDefault(); saveSettings();" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
+                        <input type="text" id="company_name" class="w-full md:w-1/2 px-3 py-2 border rounded-md">
                     </div>
-                    <div class="bg-blue-50 p-4 rounded-lg">
-                        <h4 class="font-medium text-blue-900 mb-2">IP Access Control</h4>
-                        <p class="text-sm text-blue-800">IP restrictions are now managed in the <button type="button" onclick="showTab('ips')" class="text-blue-600 underline hover:text-blue-800">IP Access tab</button> with individual IP management.</p>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Admin Email</label>
+                        <input type="email" id="admin_email" class="w-full md:w-1/2 px-3 py-2 border rounded-md">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">License Key</label>
+                        <input type="text" id="license_key" class="w-full px-3 py-2 border rounded-md" placeholder="Leave empty for open-source usage">
                     </div>
                     <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Save Settings</button>
                 </form>
@@ -147,86 +116,40 @@
         </div>
     </div>
 
-    <!-- Model Creation Dialog -->
-    <div id="modelDialog" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-        <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-lg font-medium">Add Model Configuration</h3>
-                <button onclick="hideModelDialog()" class="text-gray-400 hover:text-gray-600">&times;</button>
-            </div>
-            
-            <form id="modelForm" class="space-y-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Name</label>
-                    <input type="text" id="modelName" placeholder="My Ollama Model" class="w-full px-3 py-2 border rounded-md" required>
-                </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Backend</label>
-                    <select id="modelBackend" class="w-full px-3 py-2 border rounded-md" required>
-                        <option value="ollama">Ollama</option>
-                        <option value="lmstudio">LM Studio</option>
-                        <option value="openai">OpenAI Compatible</option>
-                    </select>
-                </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">URL</label>
-                    <input type="text" id="modelUrl" placeholder="http://localhost:11434" class="w-full px-3 py-2 border rounded-md" required>
-                </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Model Name</label>
-                    <input type="text" id="modelModelName" placeholder="llama2" class="w-full px-3 py-2 border rounded-md" required>
-                </div>
-                
+    <div id="modelDialog" class="hidden fixed inset-0 z-50 flex items-center justify-center dialog-backdrop">
+        <div class="bg-white rounded-lg p-6 shadow-xl w-full max-w-lg">
+            <h3 class="text-lg font-medium mb-4">Add Model Configuration</h3>
+            <form id="addModelForm" onsubmit="event.preventDefault(); createModel();" class="space-y-4">
+                <input type="text" name="name" placeholder="Friendly Name (e.g., My Llama 3)" class="w-full px-3 py-2 border rounded-md" required>
+                <select name="backend" class="w-full px-3 py-2 border rounded-md bg-white">
+                    <option value="ollama">Ollama</option>
+                    <option value="lmstudio">LM Studio</option>
+                    <option value="openai_compat">OpenAI Compatible</option>
+                </select>
+                <input type="text" name="url" placeholder="URL (e.g., http://localhost:11434)" class="w-full px-3 py-2 border rounded-md" required>
+                <input type="text" name="model_name" placeholder="Model Name (e.g., llama3)" class="w-full px-3 py-2 border rounded-md" required>
                 <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Temperature</label>
-                        <input type="number" id="modelTemp" step="0.1" min="0" max="2" value="0.7" class="w-full px-3 py-2 border rounded-md" required>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Max Tokens</label>
-                        <input type="number" id="modelMaxTokens" value="512" class="w-full px-3 py-2 border rounded-md" required>
-                    </div>
+                    <input type="number" name="temperature" placeholder="Temperature" value="0.7" class="w-full px-3 py-2 border rounded-md">
+                    <input type="number" name="max_tokens" placeholder="Max Tokens" value="512" class="w-full px-3 py-2 border rounded-md">
                 </div>
-                
-                <div class="flex items-center">
-                    <input type="checkbox" id="modelActive" class="mr-2">
-                    <label for="modelActive" class="text-sm text-gray-700">Set as active model</label>
-                </div>
-                
-                <div class="flex space-x-3 pt-4">
-                    <button type="submit" class="flex-1 bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700">Create Model</button>
-                    <button type="button" onclick="testNewModel()" class="flex-1 bg-green-600 text-white py-2 rounded-md hover:bg-green-700">Test & Create</button>
+                <div class="flex items-center"><input type="checkbox" name="is_active" class="mr-2 h-4 w-4"><label>Set as active model</label></div>
+                <div class="flex justify-end space-x-3 pt-4">
+                    <button type="button" onclick="hideModelDialog()" class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600">Cancel</button>
+                    <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Create Model</button>
                 </div>
             </form>
         </div>
     </div>
 
-    <!-- IP Creation Dialog -->
-    <div id="ipDialog" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-        <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-lg font-medium">Add IP Address</h3>
-                <button onclick="hideIPDialog()" class="text-gray-400 hover:text-gray-600">&times;</button>
-            </div>
-            
-            <form id="ipForm" class="space-y-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">IP Address or CIDR</label>
-                    <input type="text" id="ipAddress" placeholder="192.168.1.100 or 192.168.1.0/24" class="w-full px-3 py-2 border rounded-md" required>
-                    <p class="text-xs text-gray-500 mt-1">Single IP or CIDR range (e.g., 192.168.1.0/24)</p>
-                </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
-                    <input type="text" id="ipLabel" placeholder="Office network" class="w-full px-3 py-2 border rounded-md">
-                </div>
-                
-                <div class="flex space-x-3 pt-4">
-                    <button type="button" onclick="hideIPDialog()" class="flex-1 bg-gray-500 text-white py-2 rounded-md hover:bg-gray-600">Cancel</button>
-                    <button type="submit" class="flex-1 bg-green-600 text-white py-2 rounded-md hover:bg-green-700">Add IP</button>
+    <div id="ipDialog" class="hidden fixed inset-0 z-50 flex items-center justify-center dialog-backdrop">
+        <div class="bg-white rounded-lg p-6 shadow-xl w-full max-w-lg">
+            <h3 class="text-lg font-medium mb-4">Add IP Restriction</h3>
+            <form id="addIpForm" onsubmit="event.preventDefault(); createIP();" class="space-y-4">
+                <input type="text" name="ip_address" placeholder="IP Address or CIDR (e.g., 192.168.1.1/24)" class="w-full px-3 py-2 border rounded-md" required>
+                <input type="text" name="label" placeholder="Description (e.g., Office Network)" class="w-full px-3 py-2 border rounded-md">
+                <div class="flex justify-end space-x-3 pt-4">
+                    <button type="button" onclick="hideIPDialog()" class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600">Cancel</button>
+                    <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Add IP</button>
                 </div>
             </form>
         </div>
