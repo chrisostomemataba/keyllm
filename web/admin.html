@@ -117,30 +117,118 @@
 
         <div id="content-settings" class="tab-content hidden">
             <div class="bg-white shadow rounded-lg p-6">
-                <h2 class="text-lg font-medium text-gray-900 mb-4">Settings</h2>
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-lg font-medium text-gray-900">System Settings</h2>
+                    <span class="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">v1.0.0 - Open Source</span>
+                </div>
                 <form id="settingsForm" class="space-y-4">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">Company Name</label>
-                            <input type="text" id="company_name" class="w-full px-3 py-2 border rounded-md">
+                            <input type="text" id="company_name" class="w-full px-3 py-2 border rounded-md" placeholder="KeyLLM">
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">Admin Email</label>
-                            <input type="email" id="admin_email" class="w-full px-3 py-2 border rounded-md">
-                        </div>
-                        <div class="md:col-span-2">
-                            <label class="block text-sm font-medium text-gray-700 mb-2">IP Allowlist</label>
-                            <input type="text" id="ip_allowlist" placeholder="192.168.1.0/24,10.0.0.1" class="w-full px-3 py-2 border rounded-md">
-                            <p class="text-sm text-gray-500 mt-1">Comma-separated IPs or CIDR ranges. Leave empty for no restrictions.</p>
+                            <input type="email" id="admin_email" class="w-full px-3 py-2 border rounded-md" placeholder="admin@local">
                         </div>
                         <div class="md:col-span-2">
                             <label class="block text-sm font-medium text-gray-700 mb-2">License Key</label>
-                            <input type="text" id="license_key" class="w-full px-3 py-2 border rounded-md">
+                            <input type="text" id="license_key" class="w-full px-3 py-2 border rounded-md" placeholder="Enter your license key">
+                            <p class="text-sm text-gray-500 mt-1">Leave empty for open source usage</p>
                         </div>
+                    </div>
+                    <div class="bg-blue-50 p-4 rounded-lg">
+                        <h4 class="font-medium text-blue-900 mb-2">IP Access Control</h4>
+                        <p class="text-sm text-blue-800">IP restrictions are now managed in the <button type="button" onclick="showTab('ips')" class="text-blue-600 underline hover:text-blue-800">IP Access tab</button> with individual IP management.</p>
                     </div>
                     <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Save Settings</button>
                 </form>
             </div>
+        </div>
+    </div>
+
+    <!-- Model Creation Dialog -->
+    <div id="modelDialog" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-medium">Add Model Configuration</h3>
+                <button onclick="hideModelDialog()" class="text-gray-400 hover:text-gray-600">&times;</button>
+            </div>
+            
+            <form id="modelForm" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Name</label>
+                    <input type="text" id="modelName" placeholder="My Ollama Model" class="w-full px-3 py-2 border rounded-md" required>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Backend</label>
+                    <select id="modelBackend" class="w-full px-3 py-2 border rounded-md" required>
+                        <option value="ollama">Ollama</option>
+                        <option value="lmstudio">LM Studio</option>
+                        <option value="openai">OpenAI Compatible</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">URL</label>
+                    <input type="text" id="modelUrl" placeholder="http://localhost:11434" class="w-full px-3 py-2 border rounded-md" required>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Model Name</label>
+                    <input type="text" id="modelModelName" placeholder="llama2" class="w-full px-3 py-2 border rounded-md" required>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Temperature</label>
+                        <input type="number" id="modelTemp" step="0.1" min="0" max="2" value="0.7" class="w-full px-3 py-2 border rounded-md" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Max Tokens</label>
+                        <input type="number" id="modelMaxTokens" value="512" class="w-full px-3 py-2 border rounded-md" required>
+                    </div>
+                </div>
+                
+                <div class="flex items-center">
+                    <input type="checkbox" id="modelActive" class="mr-2">
+                    <label for="modelActive" class="text-sm text-gray-700">Set as active model</label>
+                </div>
+                
+                <div class="flex space-x-3 pt-4">
+                    <button type="submit" class="flex-1 bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700">Create Model</button>
+                    <button type="button" onclick="testNewModel()" class="flex-1 bg-green-600 text-white py-2 rounded-md hover:bg-green-700">Test & Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- IP Creation Dialog -->
+    <div id="ipDialog" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-medium">Add IP Address</h3>
+                <button onclick="hideIPDialog()" class="text-gray-400 hover:text-gray-600">&times;</button>
+            </div>
+            
+            <form id="ipForm" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">IP Address or CIDR</label>
+                    <input type="text" id="ipAddress" placeholder="192.168.1.100 or 192.168.1.0/24" class="w-full px-3 py-2 border rounded-md" required>
+                    <p class="text-xs text-gray-500 mt-1">Single IP or CIDR range (e.g., 192.168.1.0/24)</p>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                    <input type="text" id="ipLabel" placeholder="Office network" class="w-full px-3 py-2 border rounded-md">
+                </div>
+                
+                <div class="flex space-x-3 pt-4">
+                    <button type="button" onclick="hideIPDialog()" class="flex-1 bg-gray-500 text-white py-2 rounded-md hover:bg-gray-600">Cancel</button>
+                    <button type="submit" class="flex-1 bg-green-600 text-white py-2 rounded-md hover:bg-green-700">Add IP</button>
+                </div>
+            </form>
         </div>
     </div>
 
