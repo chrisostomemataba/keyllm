@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  keyllm:
+    build: .
+    container_name: keyllm_app
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_PATH=/data/keyllm.db
+    volumes:
+      - keyllm_data:/data
+    restart: unless-stopped
+volumes:
+  keyllm_data:
