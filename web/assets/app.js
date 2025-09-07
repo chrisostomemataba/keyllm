@@ -56,7 +56,19 @@ function logout() {
 }
 
 // --- API Keys Section ---
-function showCreateKeyForm() { document.getElementById('createKeyForm').classList.remove('hidden'); }
+async function showCreateKeyForm() {
+    // Fetch models and populate the dropdown
+    const models = await apiCall('/admin/models');
+    const select = document.getElementById('keyModelId');
+    select.innerHTML = '<option value="">-- Select a Model --</option>'; // Default option
+    if (models) {
+        models.forEach(model => {
+            select.innerHTML += `<option value="${model.id}">${model.name}</option>`;
+        });
+    }
+    document.getElementById('createKeyForm').classList.remove('hidden');
+}
+
 function hideCreateKeyForm() { document.getElementById('createKeyForm').classList.add('hidden'); }
 
 async function loadKeys() {
@@ -71,18 +83,18 @@ async function loadKeys() {
             <thead class="bg-gray-50">
                 <tr>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Key</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Linked Model</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Label / Owner</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
                     <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
             </thead>
             <tbody class="bg-white divide-y divide-gray-200">
                 ${keys.map(key => `
                     <tr>
-                        <td class="px-6 py-4 whitespace-nowrap"><code class="text-sm text-gray-800 bg-gray-100 p-1 rounded">${key.key}</code></td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">${key.label || 'N/A'} / ${key.owner || 'N/A'}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">${new Date(key.created_at).toLocaleDateString()}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <td class="px-6 py-4"><code class="text-sm bg-gray-100 p-1 rounded">${key.key}</code></td>
+                        <td class="px-6 py-4 text-sm font-medium text-gray-800">${key.model_name}</td>
+                        <td class="px-6 py-4 text-sm text-gray-600">${key.label || 'N/A'} / ${key.owner || 'N/A'}</td>
+                        <td class="px-6 py-4 text-right">
                             <button onclick="deleteKey(${key.id})" class="text-red-600 hover:text-red-800">Delete</button>
                         </td>
                     </tr>
@@ -92,15 +104,18 @@ async function loadKeys() {
 }
 
 async function createKey() {
-    try {
-        const label = document.getElementById('keyLabel').value;
-        const owner = document.getElementById('keyOwner').value;
-        await apiCall('/admin/keys', 'POST', { label, owner });
-        hideCreateKeyForm();
-        loadKeys();
-    } catch (error) {
-        console.error("Failed to create key:", error);
+    const keyData = {
+        label: document.getElementById('keyLabel').value,
+        owner: document.getElementById('keyOwner').value,
+        model_id: parseInt(document.getElementById('keyModelId').value)
+    };
+    if (!keyData.model_id) {
+        alert("Please select a model to link to the API key.");
+        return;
     }
+    await apiCall('/admin/keys', 'POST', keyData);
+    hideCreateKeyForm();
+    loadKeys();
 }
 
 async function deleteKey(id) {
@@ -113,14 +128,17 @@ async function deleteKey(id) {
 // --- Model Config Section ---
 const modelDialog = document.getElementById('modelDialog');
 const modelForm = document.getElementById('addModelForm');
-function showModelDialog() { modelDialog.classList.remove('hidden'); }
+function showModelDialog() {
+    document.getElementById('testResult').innerHTML = ''; // Clear previous test results
+    modelDialog.classList.remove('hidden');
+}
 function hideModelDialog() { modelForm.reset(); modelDialog.classList.add('hidden'); }
 
 async function loadModels() {
     const models = await apiCall('/admin/models');
     const container = document.getElementById('modelsList');
     if (!models || models.length === 0) {
-        container.innerHTML = '<p class="text-gray-500">No model configurations found. Click "Add Model" to create one.</p>';
+        container.innerHTML = '<p class="text-gray-500">No models found. Click "Add Model" to create one.</p>';
         return;
     }
     container.innerHTML = `
@@ -129,20 +147,16 @@ async function loadModels() {
                 <tr>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Backend / Model</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                     <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
             </thead>
             <tbody class="bg-white divide-y divide-gray-200">
                 ${models.map(m => `
                     <tr>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${m.name}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">${m.backend} / ${m.model_name}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm">
-                            ${m.is_active ? '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">Active</span>' : '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">Inactive</span>'}
-                        </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-4">
-                            ${!m.is_active ? `<button onclick="activateModel(${m.id})" class="text-blue-600 hover:text-blue-800">Activate</button>` : ''}
+                        <td class="px-6 py-4 font-medium text-gray-900">${m.name}</td>
+                        <td class="px-6 py-4 text-sm text-gray-600">${m.backend} / ${m.model_name}</td>
+                        <td class="px-6 py-4 text-right text-sm font-medium space-x-4">
+                            <button onclick="openChatDialog(${m.id}, '${m.name}')" class="text-green-600 hover:text-green-800">Chat</button>
                             <button onclick="deleteModel(${m.id})" class="text-red-600 hover:text-red-800">Delete</button>
                         </td>
                     </tr>
@@ -152,36 +166,110 @@ async function loadModels() {
 }
 
 async function createModel() {
+    const formData = new FormData(modelForm);
+    const modelData = {
+        name: formData.get('name'),
+        backend: formData.get('backend'),
+        url: formData.get('url'),
+        model_name: formData.get('model_name'),
+        temperature: parseFloat(formData.get('temperature')),
+        max_tokens: parseInt(formData.get('max_tokens')),
+    };
+    await apiCall('/admin/models', 'POST', modelData);
+    hideModelDialog();
+    loadModels();
+}
+
+async function testConnection() {
+    const btn = document.getElementById('testConnectionBtn');
+    const resultDiv = document.getElementById('testResult');
+    const testData = { url: modelForm.elements.url.value };
+
+    btn.textContent = 'Testing...';
+    btn.disabled = true;
+    resultDiv.innerHTML = '';
+
     try {
-        const formData = new FormData(modelForm);
-        const modelData = {
-            name: formData.get('name'),
-            backend: formData.get('backend'),
-            url: formData.get('url'),
-            model_name: formData.get('model_name'),
-            temperature: parseFloat(formData.get('temperature')),
-            max_tokens: parseInt(formData.get('max_tokens')),
-            is_active: formData.get('is_active') === 'on'
-        };
-        await apiCall('/admin/models', 'POST', modelData);
-        hideModelDialog();
-        loadModels();
-    } catch (error) {
-        console.error("Failed to create model:", error);
+        const result = await apiCall('/admin/models/test', 'POST', testData);
+        if (result.ok) {
+            resultDiv.className = 'text-sm p-2 rounded-md bg-green-100 text-green-800';
+            resultDiv.textContent = `Success! Status: ${result.status}`;
+        } else {
+            resultDiv.className = 'text-sm p-2 rounded-md bg-red-100 text-red-800';
+            resultDiv.textContent = `Failed! ${result.error || result.status}`;
+        }
+    } catch (e) {
+        resultDiv.className = 'text-sm p-2 rounded-md bg-red-100 text-red-800';
+        resultDiv.textContent = `Error: ${e.message}`;
+    } finally {
+        btn.textContent = 'Test Connection';
+        btn.disabled = false;
     }
 }
 
 async function deleteModel(id) {
-    if (confirm('Delete this model configuration?')) {
+    if (confirm('This will also delete any API keys linked to this model. Continue?')) {
         await apiCall(`/admin/models/${id}`, 'DELETE');
         loadModels();
     }
 }
 
-async function activateModel(id) {
-    await apiCall(`/admin/models/${id}/activate`, 'PUT');
-    loadModels();
+// --- Chat Dialog Logic (NEW) ---
+const chatDialog = document.getElementById('chatDialog');
+const chatForm = document.getElementById('chatForm');
+const chatInput = document.getElementById('chatInput');
+const chatHistory = document.getElementById('chatHistory');
+const chatModelName = document.getElementById('chatModelName');
+let currentChatModelId = null;
+let chatMessages = [];
+
+function openChatDialog(modelId, modelName) {
+    currentChatModelId = modelId;
+    chatMessages = []; // Clear history for new session
+    chatModelName.textContent = `Chat with ${modelName}`;
+    chatHistory.innerHTML = '<div class="chat-bubble llm">Hi! How can I help you today?</div>';
+    chatDialog.classList.remove('hidden');
+    chatInput.focus();
 }
+
+function closeChatDialog() {
+    chatDialog.classList.add('hidden');
+    currentChatModelId = null;
+}
+
+chatForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const prompt = chatInput.value.trim();
+    if (!prompt) return;
+
+    // Add user message to UI
+    chatHistory.innerHTML += `<div class="chat-bubble user">${prompt}</div>`;
+    chatInput.value = '';
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+
+    // Show typing indicator
+    const typingIndicator = document.createElement('div');
+    typingIndicator.className = 'chat-bubble llm animate-pulse';
+    typingIndicator.textContent = '...';
+    chatHistory.appendChild(typingIndicator);
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+
+    try {
+        const response = await apiCall(`/admin/models/${currentChatModelId}/chat`, 'POST', { prompt });
+        typingIndicator.remove(); // Remove indicator
+        // Add LLM response to UI
+        chatHistory.innerHTML += `<div class="chat-bubble llm">${response.output}</div>`;
+    } catch (e) {
+        typingIndicator.textContent = `Error: ${e.message}`;
+    }
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+});
+// Add a click listener to the backdrop to close the chat
+chatDialog.addEventListener('click', (event) => {
+    if (event.target === chatDialog) {
+        closeChatDialog();
+    }
+});
 
 // --- IP Access Section ---
 const ipDialog = document.getElementById('ipDialog');
