@@ -337,6 +337,37 @@ func main() {
 		return c.JSON(fiber.Map{"output": outText})
 	})
 
+	admin.Post("/models/test", func(c *fiber.Ctx) error {
+		var cfg ModelCfg
+		if err := c.BodyParser(&cfg); err != nil {
+			return fiber.ErrBadRequest
+		}
+
+		if cfg.URL == "" {
+			return fiber.NewError(400, "URL is required for testing")
+		}
+
+		client := http.Client{
+			Timeout: 5 * time.Second, // 5-second timeout for the test
+		}
+
+		// A simple GET request is enough to verify the endpoint is reachable
+		resp, err := client.Get(cfg.URL)
+		if err != nil {
+			return c.JSON(fiber.Map{
+				"ok":    false,
+				"error": "Connection failed: " + err.Error(),
+			})
+		}
+		defer resp.Body.Close()
+
+		// A status code less than 500 means the server is running and reachable.
+		return c.JSON(fiber.Map{
+			"ok":     resp.StatusCode < 500,
+			"status": resp.Status,
+		})
+	})
+
 	// KEYS
 	admin.Get("/keys", func(c *fiber.Ctx) error {
 		rows, _ := db.Query(`SELECT k.id, k.key, k.label, k.owner, k.model_id, m.name as model_name FROM api_keys k JOIN model_configs m ON k.model_id = m.id ORDER BY k.id DESC`)
