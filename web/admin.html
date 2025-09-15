@@ -5,11 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KeyLLM Admin Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         .dialog-backdrop { background-color: rgba(0, 0, 0, 0.5); }
-        .chat-bubble { max-width: 80%; padding: 0.5rem 1rem; border-radius: 1rem; }
-        .chat-bubble.user { background-color: #dbeafe; align-self: flex-end; }
+        .chat-bubble { max-width: 80%; padding: 0.5rem 1rem; border-radius: 1rem; margin-bottom: 0.5rem; }
+        .chat-bubble.user { background-color: #dbeafe; align-self: flex-end; margin-left: auto; }
         .chat-bubble.llm { background-color: #e5e7eb; align-self: flex-start; }
+        .metric-card { @apply bg-white shadow rounded-lg p-6 border border-gray-200; }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -20,6 +22,10 @@
                     <h1 class="text-xl font-semibold text-gray-900">🔑 KeyLLM Admin</h1>
                 </div>
                 <div class="flex items-center space-x-4">
+                    <div class="flex items-center space-x-2">
+                        <div id="userAvatar" class="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white text-sm font-medium"></div>
+                        <span id="userEmail" class="text-sm text-gray-700"></span>
+                    </div>
                     <button onclick="logout()" class="text-sm font-medium text-gray-500 hover:text-red-600">Logout</button>
                 </div>
             </div>
@@ -29,36 +35,56 @@
     <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
         <div class="mb-8">
             <div class="flex space-x-1 bg-gray-200 p-1 rounded-lg w-fit">
-                <button onclick="showTab('keys')" id="tab-keys" class="px-4 py-2 rounded-md text-sm font-medium">API Keys</button>
-                <button onclick="showTab('models')" id="tab-models" class="px-4 py-2 rounded-md text-sm font-medium">Models</button>
-                <button onclick="showTab('ips')" id="tab-ips" class="px-4 py-2 rounded-md text-sm font-medium">IP Access</button>
-                <button onclick="showTab('logs')" id="tab-logs" class="px-4 py-2 rounded-md text-sm font-medium">Usage Logs</button>
+                <button id="tab-dashboard" class="tab-btn px-4 py-2 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700">Dashboard</button>
+                <button id="tab-models" class="tab-btn px-4 py-2 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700">Models</button>
+                <button id="tab-keys" class="tab-btn px-4 py-2 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700">API Keys</button>
+                <button id="tab-logs" class="tab-btn px-4 py-2 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700">Usage Logs</button>
+                <button id="tab-ips" class="tab-btn px-4 py-2 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700">IP Access</button>
+                <button id="tab-settings" class="tab-btn px-4 py-2 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700">Settings</button>
             </div>
         </div>
 
-        <div id="content-keys" class="tab-content">
+        <!-- Dashboard Tab -->
+        <div id="content-dashboard" class="tab-content">
             <div class="bg-white shadow rounded-lg">
-                <div class="px-6 py-4 border-b flex justify-between items-center">
-                    <h2 class="text-lg font-medium text-gray-900">API Keys</h2>
-                    <button onclick="showCreateKeyForm()" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm">Create Key</button>
+                <div class="px-6 py-4 border-b">
+                    <h2 class="text-lg font-medium text-gray-900">Dashboard Overview</h2>
                 </div>
-                <div id="createKeyForm" class="hidden px-6 py-4 border-b bg-gray-50">
-                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
-                        <input type="text" id="keyLabel" placeholder="Label (e.g., Research Dept)" class="px-3 py-2 border rounded-md">
-                        <input type="text" id="keyOwner" placeholder="Owner (e.g., jane.doe)" class="px-3 py-2 border rounded-md">
-                        <select id="keyModelId" class="px-3 py-2 border rounded-md bg-white"></select>
-                        <div class="flex space-x-2">
-                            <button onclick="createKey()" class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700">Save</button>
-                            <button onclick="hideCreateKeyForm()" class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600">Cancel</button>
+                <div class="p-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+                        <div class="metric-card">
+                            <dt class="text-sm font-medium text-gray-500 truncate">Active API Keys</dt>
+                            <dd id="activeKeys" class="text-3xl font-semibold text-gray-900">0</dd>
+                        </div>
+                        <div class="metric-card">
+                            <dt class="text-sm font-medium text-gray-500 truncate">Requests Today</dt>
+                            <dd id="requestsToday" class="text-3xl font-semibold text-gray-900">0</dd>
+                        </div>
+                        <div class="metric-card">
+                            <dt class="text-sm font-medium text-gray-500 truncate">Total Users</dt>
+                            <dd id="totalUsers" class="text-3xl font-semibold text-gray-900">0</dd>
+                        </div>
+                        <div class="metric-card">
+                            <dt class="text-sm font-medium text-gray-500 truncate">Avg Latency (24h)</dt>
+                            <dd id="avgLatency" class="text-3xl font-semibold text-gray-900">0ms</dd>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div class="lg:col-span-2">
+                            <div class="bg-white shadow rounded-lg p-6">
+                                <h3 class="text-lg font-medium text-gray-900 mb-4">Top Endpoints (Last 24h)</h3>
+                                <ul id="topEndpoints" class="space-y-2"></ul>
+                            </div>
+                        </div>
+                        <div>
+                            <canvas id="latencyChart" width="400" height="200"></canvas>
                         </div>
                     </div>
                 </div>
-                <div class="p-6">
-                    <div id="keysList"></div>
-                </div>
             </div>
         </div>
 
+        <!-- Models Tab -->
         <div id="content-models" class="tab-content hidden">
             <div class="bg-white shadow rounded-lg">
                 <div class="px-6 py-4 border-b flex justify-between items-center">
@@ -66,53 +92,168 @@
                     <button onclick="showModelDialog()" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm">Add Model</button>
                 </div>
                 <div class="p-6">
-                    <div id="modelsList"></div>
+                    <div id="modelsList">
+                        <p class="text-gray-500">Loading...</p>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <div id="content-ips" class="tab-content hidden"></div>
-        <div id="content-logs" class="tab-content hidden"></div>
-    </div>
-
-    <div id="modelDialog" class="hidden fixed inset-0 z-50 flex items-center justify-center dialog-backdrop">
-        <div class="bg-white rounded-lg p-6 shadow-xl w-full max-w-lg">
-            <h3 class="text-lg font-medium mb-4">Add Model Configuration</h3>
-            <form id="addModelForm" onsubmit="event.preventDefault(); createModel();" class="space-y-4">
-                <input type="text" name="name" placeholder="Friendly Name (e.g., My Llama 3)" class="w-full px-3 py-2 border rounded-md" required>
-                <select name="backend" class="w-full px-3 py-2 border rounded-md bg-white">
-                    <option value="ollama">Ollama</option>
-                    <option value="lmstudio">LM Studio</option>
-                    <option value="openai_compat">OpenAI Compatible</option>
-                </select>
-                <input type="text" name="url" placeholder="URL (e.g., http://localhost:11434)" class="w-full px-3 py-2 border rounded-md" required>
-                <input type="text" name="model_name" placeholder="Model Name (e.g., llama3)" class="w-full px-3 py-2 border rounded-md" required>
-                <div id="testResult" class="text-sm p-2 rounded-md"></div>
-                <div class="flex justify-end space-x-3 pt-2">
-                    <button type="button" onclick="hideModelDialog()" class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600">Cancel</button>
-                    <button type="button" id="testConnectionBtn" onclick="testConnection()" class="bg-yellow-500 text-white px-4 py-2 rounded-md hover:bg-yellow-600">Test Connection</button>
-                    <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Create Model</button>
+        <!-- API Keys Tab -->
+        <div id="content-keys" class="tab-content hidden">
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-6 py-4 border-b flex justify-between items-center">
+                    <h2 class="text-lg font-medium text-gray-900">API Keys</h2>
+                    <button onclick="showCreateKeyDialog()" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm">Create Key</button>
                 </div>
-            </form>
-        </div>
-    </div>
-    
-    <div id="chatDialog" class="hidden fixed inset-0 z-50 flex items-center justify-center dialog-backdrop">
-        <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl h-3/4 flex flex-col">
-            <div class="p-4 border-b">
-                <h3 id="chatModelName" class="text-lg font-medium">Chat</h3>
+                <div class="p-6">
+                    <div id="keysList">
+                        <p class="text-gray-500">Loading...</p>
+                    </div>
+                </div>
             </div>
-            <div id="chatHistory" class="flex-grow p-4 space-y-4 overflow-y-auto flex flex-col">
+        </div>
+
+        <!-- Logs Tab -->
+        <div id="content-logs" class="tab-content hidden">
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-6 py-4 border-b flex justify-between items-center">
+                    <h2 class="text-lg font-medium text-gray-900">Usage Logs</h2>
+                    <a href="/admin/logs/export" download class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm">Export CSV</a>
                 </div>
-            <div class="p-4 border-t">
-                <form id="chatForm" class="flex space-x-2">
-                    <input type="text" id="chatInput" placeholder="Type your message..." class="flex-grow px-3 py-2 border rounded-md">
-                    <button type="submit" id="chatSendBtn" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Send</button>
+                <div class="p-6">
+                    <div id="logsList">
+                        <p class="text-gray-500">Loading...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- IP Access Tab -->
+        <div id="content-ips" class="tab-content hidden">
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-6 py-4 border-b flex justify-between items-center">
+                    <h2 class="text-lg font-medium text-gray-900">IP Allowlist</h2>
+                    <button onclick="showCreateIPDialog()" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm">Add IP</button>
+                </div>
+                <div class="p-6">
+                    <div id="ipsList">
+                        <p class="text-gray-500">Loading...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings Tab -->
+        <div id="content-settings" class="tab-content hidden">
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-6 py-4 border-b">
+                    <h2 class="text-lg font-medium text-gray-900">Settings</h2>
+                </div>
+                <div class="p-6">
+                    <div id="settingsTable" class="mb-6">
+                        <p class="text-gray-500">Loading...</p>
+                    </div>
+                    <button onclick="showSettingsDialog()" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Edit Settings</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Model Dialog -->
+        <div id="modelDialog" class="hidden fixed inset-0 z-50 flex items-center justify-center dialog-backdrop">
+            <div class="bg-white rounded-lg p-6 shadow-xl w-full max-w-lg max-h-[80vh] overflow-y-auto">
+                <h3 class="text-lg font-medium mb-4">Add Model Configuration</h3>
+                <form id="addModelForm" class="space-y-4">
+                    <input type="text" name="name" placeholder="Friendly Name (e.g., My Llama 3)" class="w-full px-3 py-2 border rounded-md" required>
+                    <select name="backend" class="w-full px-3 py-2 border rounded-md bg-white">
+                        <option value="ollama">Ollama</option>
+                        <option value="lmstudio">LM Studio</option>
+                        <option value="openai_compat">OpenAI Compatible</option>
+                    </select>
+                    <input type="text" name="url" placeholder="URL (e.g., http://localhost:11434)" class="w-full px-3 py-2 border rounded-md" required>
+                    <input type="text" name="model_name" placeholder="Model Name (e.g., llama3)" class="w-full px-3 py-2 border rounded-md" required>
+                    <input type="number" name="temperature" step="0.1" value="0.7" min="0" max="2" class="w-full px-3 py-2 border rounded-md">
+                    <input type="number" name="max_tokens" value="512" class="w-full px-3 py-2 border rounded-md">
+                    <div id="testResult" class="text-sm p-2 rounded-md"></div>
+                    <div class="flex justify-end space-x-3 pt-2">
+                        <button type="button" onclick="hideModelDialog()" class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600">Cancel</button>
+                        <button type="button" id="testConnectionBtn" onclick="testConnection()" class="bg-yellow-500 text-white px-4 py-2 rounded-md hover:bg-yellow-600">Test Connection</button>
+                        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Create Model</button>
+                    </div>
                 </form>
             </div>
         </div>
-    </div>
-    
-    <script src="assets/app.js"></script>
+
+        <!-- API Key Dialog -->
+        <div id="keyDialog" class="hidden fixed inset-0 z-50 flex items-center justify-center dialog-backdrop">
+            <div class="bg-white rounded-lg p-6 shadow-xl w-full max-w-lg">
+                <h3 class="text-lg font-medium mb-4">Create API Key</h3>
+                <form id="createKeyForm" class="space-y-4">
+                    <input type="text" id="keyLabel" placeholder="Label (e.g., Research Dept)" class="w-full px-3 py-2 border rounded-md">
+                    <input type="text" id="keyOwner" placeholder="Owner (e.g., jane.doe)" class="w-full px-3 py-2 border rounded-md">
+                    <select id="keyModelId" class="w-full px-3 py-2 border rounded-md bg-white">
+                        <option value="">Select Model</option>
+                    </select>
+                    <input type="number" id="keyDailyLimit" placeholder="Daily Limit (0=unlimited)" class="w-full px-3 py-2 border rounded-md">
+                    <input type="number" id="keyTokenLimit" placeholder="Token Limit (0=unlimited)" class="w-full px-3 py-2 border rounded-md">
+                    <input type="date" id="keyExpiresAt" class="w-full px-3 py-2 border rounded-md">
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="hideCreateKeyDialog()" class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600">Cancel</button>
+                        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Create Key</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Chat Dialog -->
+        <div id="chatDialog" class="hidden fixed inset-0 z-50 flex items-center justify-center dialog-backdrop">
+            <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl h-3/4 flex flex-col">
+                <div class="p-4 border-b flex justify-between items-center">
+                    <h3 id="chatModelName" class="text-lg font-medium">Chat</h3>
+                    <button onclick="closeChatDialog()" class="text-gray-500 hover:text-gray-700">×</button>
+                </div>
+                <div id="chatHistory" class="flex-grow p-4 space-y-4 overflow-y-auto flex flex-col"></div>
+                <div class="p-4 border-t">
+                    <form id="chatForm" class="flex space-x-2">
+                        <input type="text" id="chatInput" placeholder="Type your message..." class="flex-grow px-3 py-2 border rounded-md">
+                        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Send</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- IP Dialog -->
+        <div id="ipDialog" class="hidden fixed inset-0 z-50 flex items-center justify-center dialog-backdrop">
+            <div class="bg-white rounded-lg p-6 shadow-xl w-full max-w-lg">
+                <h3 class="text-lg font-medium mb-4">Add IP Restriction</h3>
+                <form id="addIpForm" class="space-y-4">
+                    <input type="text" name="ip_address" placeholder="IP or CIDR (e.g., 192.168.1.0/24)" class="w-full px-3 py-2 border rounded-md" required>
+                    <input type="text" name="label" placeholder="Label (e.g., Office Network)" class="w-full px-3 py-2 border rounded-md">
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="hideIPDialog()" class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600">Cancel</button>
+                        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Add IP</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Settings Dialog -->
+        <div id="settingsDialog" class="hidden fixed inset-0 z-50 flex items-center justify-center dialog-backdrop">
+            <div class="bg-white rounded-lg p-6 shadow-xl w-full max-w-lg">
+                <h3 class="text-lg font-medium mb-4">Edit Settings</h3>
+                <form id="editSettingsForm" class="space-y-4">
+                    <input type="text" id="company_name" placeholder="Company Name" class="w-full px-3 py-2 border rounded-md">
+                    <input type="url" id="logo_url" placeholder="Logo URL" class="w-full px-3 py-2 border rounded-md">
+                    <input type="email" id="admin_email" placeholder="Admin Email" class="w-full px-3 py-2 border rounded-md">
+                    <input type="text" id="license_key" placeholder="License Key" class="w-full px-3 py-2 border rounded-md">
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="hideSettingsDialog()" class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600">Cancel</button>
+                        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Save Settings</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <script src="app.js" defer></script>
 </body>
 </html>

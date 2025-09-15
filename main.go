@@ -36,7 +36,17 @@ var (
 	db           *sql.DB
 	adminTokens  = map[string]time.Time{}
 	openAPISpec  = mustOpenAPISpec()
+	httpClient   = &http.Client{Timeout: 30 * time.Second} // Global timeout for LLM calls and tests
+	// Rate limiter: in-memory per IP+key, 10 req/min
+	rateLimiter = map[string]struct{count int; reset time.Time}{}
 )
+
+type Settings struct {
+	CompanyName string `json:"company_name"`
+	LogoURL     string `json:"logo_url"`
+	AdminEmail  string `json:"admin_email"`
+	LicenseKey  string `json:"license_key"`
+}
 
 // --- HELPER FUNCTIONS (RESTORED) ---
 func rndToken(n int) string {
@@ -46,7 +56,6 @@ func rndToken(n int) string {
 }
 
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
-
 
 func clientIP(c *fiber.Ctx) string {
 	ip := c.IP()
@@ -64,6 +73,23 @@ func mustOpenDB() *sql.DB {
 	d.Exec("PRAGMA journal_mode=WAL;")
 	d.Exec("PRAGMA busy_timeout=5000;")
 	return d
+}
+
+// Rate limit check: 10 req/min per IP+key
+func rateLimitKey(ip, key string) bool {
+	k := ip + "|" + key
+	now := time.Now()
+	r, ok := rateLimiter[k]
+	if !ok || now.Sub(r.reset) > time.Minute {
+		rateLimiter[k] = struct{count int; reset time.Time}{count: 1, reset: now}
+		return true
+	}
+	if r.count >= 10 {
+		return false
+	}
+	r.count++
+	rateLimiter[k] = r
+	return true
 }
 
 // --- SCHEMA & MIGRATIONS ---
@@ -141,6 +167,17 @@ func mustMigrate() {
 		_, _ = db.Exec("UPDATE settings SET admin_password_hash=? WHERE id=1", string(hash))
 		log.Println("Default admin password set to 'admin'")
 	}
+
+	// License stub: Log current mode (free for MVP)
+	var lk string
+	_ = db.QueryRow("SELECT license_key FROM settings WHERE id=1").Scan(&lk)
+	if lk != "" && strings.HasPrefix(lk, "free-") {
+		log.Println("License active: Free mode")
+	} else if lk != "" {
+		log.Println("License check: Invalid - contact support (MVP free)")
+	} else {
+		log.Println("No license key - running in free mode")
+	}
 }
 
 // --- AUTH MIDDLEWARE ---
@@ -188,24 +225,23 @@ func ipAllowed(ip string) bool {
 	return false
 }
 
-func apiKeyAuth(c *fiber.Ctx) (*struct {
-	ID        int64
-	ModelID   int64
-	Key       string
-	ExpiresAt *string
-}, error) {
+type APIKeyRec struct {
+	ID          int64
+	ModelID     int64
+	Key         string
+	ExpiresAt   *string
+	DailyLimit  int
+	TokenLimit  int
+}
+
+func apiKeyAuth(c *fiber.Ctx) (*APIKeyRec, error) {
 	k := c.Get("X-API-Key")
 	if k == "" {
 		return nil, fiber.ErrUnauthorized
 	}
-	row := db.QueryRow(`SELECT id, model_id, key, expires_at FROM api_keys WHERE key=?`, k)
-	var rec struct {
-		ID        int64
-		ModelID   int64
-		Key       string
-		ExpiresAt *string
-	}
-	if err := row.Scan(&rec.ID, &rec.ModelID, &rec.Key, &rec.ExpiresAt); err != nil {
+	row := db.QueryRow(`SELECT id, model_id, key, expires_at, daily_limit, token_limit FROM api_keys WHERE key=?`, k)
+	var rec APIKeyRec
+	if err := row.Scan(&rec.ID, &rec.ModelID, &rec.Key, &rec.ExpiresAt, &rec.DailyLimit, &rec.TokenLimit); err != nil {
 		return nil, fiber.ErrUnauthorized
 	}
 	if rec.ExpiresAt != nil {
@@ -220,9 +256,12 @@ func apiKeyAuth(c *fiber.Ctx) (*struct {
 // --- STRUCTS ---
 type LoginReq struct{ Email, Password string }
 type KeyReq struct {
-	Label   string `json:"label"`
-	Owner   string `json:"owner"`
-	ModelID int64  `json:"model_id"`
+	Label      string  `json:"label"`
+	Owner      string  `json:"owner"`
+	ModelID    int64   `json:"model_id"`
+	ExpiresAt  *string `json:"expires_at,omitempty"`
+	DailyLimit int     `json:"daily_limit"`
+	TokenLimit int     `json:"token_limit"`
 }
 type ModelCfg struct {
 	ID      int64             `json:"id"`
@@ -288,15 +327,73 @@ func main() {
 	// --- ADMIN GROUP ---
 	admin := app.Group("/admin", adminAuth)
 
+	// SETTINGS: New endpoints for global config
+	admin.Get("/settings", func(c *fiber.Ctx) error {
+		var s Settings
+		err := db.QueryRow("SELECT company_name, logo_url, admin_email, license_key FROM settings WHERE id=1").
+			Scan(&s.CompanyName, &s.LogoURL, &s.AdminEmail, &s.LicenseKey)
+		if err != nil {
+			return fiber.ErrInternalServerError
+		}
+		return c.JSON(s)
+	})
+	admin.Put("/settings", func(c *fiber.Ctx) error {
+		var s Settings
+		if err := c.BodyParser(&s); err != nil {
+			return fiber.ErrBadRequest
+		}
+		_, err := db.Exec("UPDATE settings SET company_name=?, logo_url=?, admin_email=?, license_key=? WHERE id=1",
+			s.CompanyName, s.LogoURL, s.AdminEmail, s.LicenseKey)
+		if err != nil {
+			return fiber.ErrInternalServerError
+		}
+		return c.SendStatus(200)
+	})
+
+	// DASHBOARD: New summary endpoint
+	admin.Get("/dashboard", func(c *fiber.Ctx) error {
+		var activeKeys, totalUsers int
+		_ = db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE expires_at IS NULL OR expires_at > ?`, nowUTC()).Scan(&activeKeys)
+		_ = db.QueryRow(`SELECT COUNT(DISTINCT owner) FROM api_keys WHERE owner != ''`).Scan(&totalUsers)
+
+		var todayReqs int
+		_ = db.QueryRow(`SELECT COUNT(*) FROM usage_logs WHERE date(ts) = date('now')`).Scan(&todayReqs)
+
+		rows, _ := db.Query(`SELECT endpoint, COUNT(*) as cnt FROM usage_logs GROUP BY endpoint ORDER BY cnt DESC LIMIT 3`)
+		defer rows.Close()
+		topEndpoints := []map[string]interface{}{}
+		for rows.Next() {
+			var ep string
+			var cnt int
+			_ = rows.Scan(&ep, &cnt)
+			topEndpoints = append(topEndpoints, fiber.Map{"endpoint": ep, "count": cnt})
+		}
+
+		var avgLatency sql.NullFloat64
+		_ = db.QueryRow(`SELECT AVG(latency_ms) FROM usage_logs WHERE ts > datetime('now', '-1 day')`).Scan(&avgLatency)
+
+		return c.JSON(fiber.Map{
+			"active_keys":     activeKeys,
+			"requests_today":  todayReqs,
+			"total_users":     totalUsers,
+			"top_endpoints":   topEndpoints,
+			"avg_latency":     avgLatency.Float64,
+		})
+	})
+
 	// MODELS
 	admin.Get("/models", func(c *fiber.Ctx) error {
-		rows, _ := db.Query(`SELECT id, name, backend, url, model_name, temperature, max_tokens, created_at FROM model_configs ORDER BY id DESC`)
+		// Fixed: Include headers_json in SELECT to match scan vars
+		rows, _ := db.Query(`SELECT id, name, backend, url, model_name, temperature, max_tokens, headers_json, created_at FROM model_configs ORDER BY id DESC`)
 		defer rows.Close()
 		var models []ModelCfg
 		for rows.Next() {
 			var m ModelCfg
 			var created, headersJson string
 			_ = rows.Scan(&m.ID, &m.Name, &m.Backend, &m.URL, &m.Model, &m.Temp, &m.MaxTok, &headersJson, &created)
+			if headersJson != "" {
+				_ = json.Unmarshal([]byte(headersJson), &m.Headers)
+			}
 			models = append(models, m)
 		}
 		return c.JSON(models)
@@ -347,12 +444,8 @@ func main() {
 			return fiber.NewError(400, "URL is required for testing")
 		}
 
-		client := http.Client{
-			Timeout: 5 * time.Second, // 5-second timeout for the test
-		}
-
-		// A simple GET request is enough to verify the endpoint is reachable
-		resp, err := client.Get(cfg.URL)
+		// Use global httpClient with timeout
+		resp, err := httpClient.Get(cfg.URL)
 		if err != nil {
 			return c.JSON(fiber.Map{
 				"ok":    false,
@@ -361,7 +454,6 @@ func main() {
 		}
 		defer resp.Body.Close()
 
-		// A status code less than 500 means the server is running and reachable.
 		return c.JSON(fiber.Map{
 			"ok":     resp.StatusCode < 500,
 			"status": resp.Status,
@@ -370,14 +462,18 @@ func main() {
 
 	// KEYS
 	admin.Get("/keys", func(c *fiber.Ctx) error {
-		rows, _ := db.Query(`SELECT k.id, k.key, k.label, k.owner, k.model_id, m.name as model_name FROM api_keys k JOIN model_configs m ON k.model_id = m.id ORDER BY k.id DESC`)
+		rows, _ := db.Query(`SELECT k.id, k.key, k.label, k.owner, k.model_id, m.name as model_name, k.daily_limit, k.token_limit, k.expires_at FROM api_keys k JOIN model_configs m ON k.model_id = m.id ORDER BY k.id DESC`)
 		defer rows.Close()
 		var keys []map[string]interface{}
 		for rows.Next() {
-			var id, model_id int64
-			var key, label, owner, model_name string
-			_ = rows.Scan(&id, &key, &label, &owner, &model_id, &model_name)
-			keys = append(keys, fiber.Map{"id": id, "key": key, "label": label, "owner": owner, "model_id": model_id, "model_name": model_name})
+			var id, model_id, daily, token int64
+			var key, label, owner, model_name, exp *string
+			_ = rows.Scan(&id, &key, &label, &owner, &model_id, &model_name, &daily, &token, &exp)
+			m := fiber.Map{"id": id, "key": *key, "label": label, "owner": owner, "model_id": model_id, "model_name": *model_name, "daily_limit": daily, "token_limit": token}
+			if exp != nil {
+				m["expires_at"] = *exp
+			}
+			keys = append(keys, m)
 		}
 		return c.JSON(keys)
 	})
@@ -388,12 +484,16 @@ func main() {
 			return fiber.NewError(400, "model_id is required")
 		}
 		k := "sk-" + rndToken(20)
-		_, err := db.Exec(`INSERT INTO api_keys (key, label, owner, model_id, created_at) VALUES (?,?,?,?,?)`,
-			k, r.Label, r.Owner, r.ModelID, nowUTC())
+		var expPtr interface{} = nil
+		if r.ExpiresAt != nil {
+			expPtr = *r.ExpiresAt
+		}
+		_, err := db.Exec(`INSERT INTO api_keys (key, label, owner, model_id, expires_at, daily_limit, token_limit, created_at) VALUES (?,?,?,?,?,?,?,?)`,
+			k, r.Label, r.Owner, r.ModelID, expPtr, r.DailyLimit, r.TokenLimit, nowUTC())
 		if err != nil {
 			return fiber.ErrInternalServerError
 		}
-		return c.SendStatus(201)
+		return c.JSON(fiber.Map{"key": k}) // Return generated key for UI
 	})
 	admin.Delete("/keys/:id", func(c *fiber.Ctx) error {
 		_, err := db.Exec("DELETE FROM api_keys WHERE id = ?", c.Params("id"))
@@ -403,30 +503,31 @@ func main() {
 		return c.SendStatus(204)
 	})
 
-	// LOGS
+	// LOGS: Polished with full fields
 	admin.Get("/logs", func(c *fiber.Ctx) error {
-		rows, _ := db.Query(`SELECT id, api_key_id, ts, tokens, model, latency_ms FROM usage_logs ORDER BY id DESC LIMIT 100`)
+		// Fixed: Full SELECT for all log fields
+		rows, _ := db.Query(`SELECT id, api_key_id, ts, prompt_chars, completion_chars, tokens, model, latency_ms, endpoint FROM usage_logs ORDER BY id DESC LIMIT 100`)
 		defer rows.Close()
 		var logs []map[string]interface{}
 		for rows.Next() {
-			var id, apiKeyID, tokens, lat int
-			var ts, model string
-			_ = rows.Scan(&id, &apiKeyID, &ts, &tokens, &model, &lat)
-			logs = append(logs, fiber.Map{"id": id, "api_key_id": apiKeyID, "ts": ts, "tokens": tokens, "model": model, "latency_ms": lat})
+			var id, apiKeyID, promptC, completionC, tokens, lat int
+			var ts, model, ep string
+			_ = rows.Scan(&id, &apiKeyID, &ts, &promptC, &completionC, &tokens, &model, &lat, &ep)
+			logs = append(logs, fiber.Map{"id": id, "api_key_id": apiKeyID, "ts": ts, "prompt_chars": promptC, "completion_chars": completionC, "tokens": tokens, "model": model, "latency_ms": lat, "endpoint": ep})
 		}
 		return c.JSON(logs)
 	})
 	admin.Get("/logs/export", func(c *fiber.Ctx) error {
-		rows, _ := db.Query(`SELECT id, api_key_id, ts, tokens, model, latency_ms FROM usage_logs ORDER BY id DESC`)
+		rows, _ := db.Query(`SELECT id, api_key_id, ts, prompt_chars, completion_chars, tokens, model, latency_ms, endpoint FROM usage_logs ORDER BY id DESC`)
 		defer rows.Close()
 		var buf bytes.Buffer
 		w := csv.NewWriter(&buf)
-		_ = w.Write([]string{"id", "api_key_id", "ts", "tokens", "model", "latency_ms"})
+		_ = w.Write([]string{"id", "api_key_id", "ts", "prompt_chars", "completion_chars", "tokens", "model", "latency_ms", "endpoint"})
 		for rows.Next() {
-			var id, apiKeyID, tokens, lat int
-			var ts, model string
-			_ = rows.Scan(&id, &apiKeyID, &ts, &tokens, &model, &lat)
-			_ = w.Write([]string{strconv.Itoa(id), strconv.Itoa(apiKeyID), ts, strconv.Itoa(tokens), model, strconv.Itoa(lat)})
+			var id, apiKeyID, promptC, completionC, tokens, lat int
+			var ts, model, ep string
+			_ = rows.Scan(&id, &apiKeyID, &ts, &promptC, &completionC, &tokens, &model, &lat, &ep)
+			_ = w.Write([]string{strconv.Itoa(id), strconv.Itoa(apiKeyID), ts, strconv.Itoa(promptC), strconv.Itoa(completionC), strconv.Itoa(tokens), model, strconv.Itoa(lat), ep})
 		}
 		w.Flush()
 		c.Set("Content-Type", "text/csv")
@@ -434,7 +535,7 @@ func main() {
 		return c.Send(buf.Bytes())
 	})
 
-	// IP ALLOWLIST
+	// IP ALLOWLIST: Fixed scan for is_active
 	admin.Get("/ips", func(c *fiber.Ctx) error {
 		rows, _ := db.Query(`SELECT id, ip_address, label, is_active FROM ip_allowlist ORDER BY id DESC`)
 		defer rows.Close()
@@ -442,9 +543,9 @@ func main() {
 		for rows.Next() {
 			var id int64
 			var ip, label string
-			var active bool
+			var active int // Match INTEGER column
 			_ = rows.Scan(&id, &ip, &label, &active)
-			ips = append(ips, fiber.Map{"id": id, "ip_address": ip, "label": label, "is_active": active})
+			ips = append(ips, fiber.Map{"id": id, "ip_address": ip, "label": label, "is_active": active == 1})
 		}
 		return c.JSON(ips)
 	})
@@ -480,9 +581,22 @@ func main() {
 		if !ipAllowed(clientIP(c)) {
 			return fiber.ErrForbidden
 		}
+		// Rate limit check
+		key := c.Get("X-API-Key")
+		if !rateLimitKey(clientIP(c), key) {
+			return fiber.ErrTooManyRequests
+		}
 		ak, err := apiKeyAuth(c)
 		if err != nil {
 			return err
+		}
+		// Daily quota check
+		if ak.DailyLimit > 0 {
+			var todayCount int
+			err = db.QueryRow(`SELECT COUNT(*) FROM usage_logs WHERE api_key_id=? AND date(ts)=date('now')`, ak.ID).Scan(&todayCount)
+			if err == nil && todayCount >= ak.DailyLimit {
+				return fiber.ErrTooManyRequests
+			}
 		}
 		var cfg ModelCfg
 		var hj string
@@ -500,9 +614,15 @@ func main() {
 			return fiber.NewError(502, err.Error())
 		}
 		lat := time.Since(start).Milliseconds()
-		toks := (len(r.Prompt) + len(outText)) / 4
-		_, _ = db.Exec(`INSERT INTO usage_logs (api_key_id, ts, tokens, model, latency_ms, endpoint) VALUES (?,?,?,?,?,?)`,
-			ak.ID, nowUTC(), toks, cfg.Model, lat, "/llm/generate")
+		promptLen := len(r.Prompt)
+		compLen := len(outText)
+		toks := (promptLen + compLen) / 4
+		// Token quota check (post-call, reject if exceeded)
+		if ak.TokenLimit > 0 && toks > ak.TokenLimit {
+			return fiber.NewError(429, "Token limit exceeded")
+		}
+		_, _ = db.Exec(`INSERT INTO usage_logs (api_key_id, ts, prompt_chars, completion_chars, tokens, model, latency_ms, endpoint) VALUES (?,?,?,?,?,?,?,?)`,
+			ak.ID, nowUTC(), promptLen, compLen, toks, cfg.Model, lat, c.OriginalURL())
 		return c.JSON(fiber.Map{"output": outText})
 	})
 
@@ -514,16 +634,20 @@ func main() {
 	log.Fatal(app.Listen(":8080"))
 }
 
-// --- LLM CALLER ---
+// --- LLM CALLER: Fixed headers support ---
 func callLLM(cfg ModelCfg, prompt string) (string, error) {
 	var outText string
 	switch strings.ToLower(cfg.Backend) {
 	case "ollama":
-		body := map[string]interface{}{"model": cfg.Model, "prompt": prompt, "options": map[string]interface{}{"temperature": cfg.Temp}, "stream": false}
+		body := map[string]interface{}{"model": cfg.Model, "prompt": prompt, "options": map[string]interface{}{"temperature": cfg.Temp, "num_predict": cfg.MaxTok}, "stream": false}
 		b, _ := json.Marshal(body)
 		req, _ := http.NewRequest(http.MethodPost, strings.TrimRight(cfg.URL, "/")+"/api/generate", bytes.NewReader(b))
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
+		// Add custom headers from config
+		for k, v := range cfg.Headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := httpClient.Do(req) // Use timed client
 		if err != nil {
 			return "", err
 		}
@@ -544,7 +668,11 @@ func callLLM(cfg ModelCfg, prompt string) (string, error) {
 		u := strings.TrimRight(cfg.URL, "/") + "/v1/chat/completions"
 		req, _ := http.NewRequest(http.MethodPost, u, bytes.NewReader(b))
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
+		// Add custom headers from config
+		for k, v := range cfg.Headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := httpClient.Do(req) // Use timed client
 		if err != nil {
 			return "", err
 		}
@@ -582,6 +710,13 @@ func mustOpenAPISpec() []byte {
 				"summary": "Admin login", "requestBody": reqObj(map[string]string{"email": "string", "password": "string"}),
 				"responses": map[string]interface{}{"200": respObj(map[string]string{"token": "string"})},
 			}},
+			"/admin/settings": map[string]interface{}{
+				"get":  secured("Get global settings", respObj(map[string]string{"company_name": "string", "logo_url": "string", "admin_email": "string", "license_key": "string"})),
+				"put":  secured("Update global settings", respEmpty(), reqObj(map[string]string{"company_name": "string", "logo_url": "string", "admin_email": "string", "license_key": "string"})),
+			},
+			"/admin/dashboard": map[string]interface{}{
+				"get": secured("Get usage summary", respObj(map[string]string{"active_keys": "integer", "requests_today": "integer"})),
+			},
 			"/admin/models": map[string]interface{}{
 				"get":  secured("List all model configurations", respArr(obj(map[string]string{"id": "integer", "name": "string", "backend": "string"}))),
 				"post": secured("Create a new model configuration", respEmpty(), reqObj(map[string]string{"name": "string", "backend": "string", "url": "string", "model_name": "string"})),
@@ -594,7 +729,7 @@ func mustOpenAPISpec() []byte {
 			},
 			"/admin/keys": map[string]interface{}{
 				"get": secured("List all API keys", respArr(obj(map[string]string{"id": "integer", "key": "string", "model_name": "string"}))),
-				"post": secured("Create a new API key", respEmpty(), reqObj(map[string]string{"label": "string", "owner": "string", "model_id": "integer"})),
+				"post": secured("Create a new API key", respObj(map[string]string{"key": "string"}), reqObj(map[string]string{"label": "string", "owner": "string", "model_id": "integer", "daily_limit": "integer", "token_limit": "integer", "expires_at": "string"})),
 			},
 			"/admin/keys/{id}": map[string]interface{}{
 				"delete": secured("Delete an API key", respEmpty()),
